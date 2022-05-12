@@ -1,0 +1,163 @@
+---
+title: "Course-project"
+author: "Hai Vo"
+date: '2022-05-09'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE)
+```
+
+## Overview
+
+This is final project of Practical Machine Learning course by John Hopkins. In this report, I use the data provided to predict how well trainer perform bicep curl exercise using the data from wearable sensors. The source of data could be found [here](https://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har).
+
+The outcome variable is `classe`. This variable could be A, B, C, D or E depend on how well trainer perform exercise. A is for good form, judge by professional weight lifters. Others letters is for different mistake detect by judges.
+
+The predictors is the data that accelerometers sensor recorded while the trainer perform exercise. These sensors including wearable devices on belt, forearm, arm and dumbell of 6 participants.
+
+The github repo of this report could be found [here](https://github.com/vohai611/pratical-ml-cousera)
+
+## Load and clean data 
+
+```{r}
+library(tidyverse)
+library(caret)
+df = read_csv("data/pml-training.csv")
+
+```
+
+The dataset have `r ncol(df)` variables. Many of them do not provide any valuable information for our prediction models, for example `time_stamp` column. Therefore, I will remove them and only keep column names that contain "belt", "arm" or "forearm".
+
+```{r}
+predictors = grep(pattern = "(belt)|(arm)|(forearm)", names(df), value = TRUE) 
+df = df %>% 
+  select(all_of(predictors), classe) 
+ 
+```
+
+We also remove variables that mostly contain NA values. Variables will be remove if the proportion of NA is higher than 90%
+
+```{r}
+prop_na = function(vec) mean(is.na(vec))
+prop_na(df$kurtosis_roll_belt)
+
+df = df[,sapply(df, prop_na) <= 0.9]
+
+dim(df)
+```
+
+After this step, we only keep 40 variables which are 1 outcome and 39 predictors. In the next part, we will build machine learning models.
+
+## Split data
+
+```{r}
+inTrain = createDataPartition(y = df$classe, p = 0.7, list = F)
+train = df[inTrain, ]
+test = df[-inTrain, ]
+```
+
+This chunk of code split data to train and test set with the ratio 7/3.
+
+## Build model
+
+First we create `trainControl` to ask the `train` function to perform 5-folds cross-validation.
+
+```{r}
+control = trainControl(method = "cv",
+                       number = 5,
+                       verboseIter = F)
+```
+
+Next, we build three different model: Decision tree, LDA and Random forest. The model bring highest accuracy will be use to predict test set.
+
+### Decision tree
+
+```{r}
+d_tree <- train(classe~., data=train, method="rpart", trControl = control, tuneLength = 5)
+d_tree
+d_tree$resample[1:2] %>% colMeans()
+```
+
+### LDA
+
+```{r}
+lda  <- train(classe~., data=train, method="lda", trControl = control)
+lda
+lda$resample[1:2] %>% colMeans()
+```
+
+### Random forest
+
+Because random forest can take huge advantages of parallel computing. We will "register" the parallel processing to split workload to multi-core. This step will reduce huge amount of running time.
+
+```{r}
+library(doParallel)
+cl <- makePSOCKcluster(detectCores(logical = FALSE) -1)
+registerDoParallel(cl)
+```
+
+
+```{r}
+rf <- train(classe~., data=train, method="rf", trControl = control, tuneLength = 5)
+rf
+rf$resample[1:2] %>% colMeans()
+```
+
+According to cross validation accuracy, we can conclude that Random Forest provide the best `Accuray` compare with the others.
+Therefore I will use Random Forest to fit the finale model. 
+
+Todo so, we have to extract the Random forest tuned value, that is:
+
+```{r}
+rf$finalModel$tuneValue
+```
+
+The tuned value would be plug  to model by the argument `tuneGrid=`. Now we fit the tuned model to the whole training set.
+
+```{r}
+set.seed(1)
+fitControl = trainControl(method = "none", classProbs = TRUE)
+final_rf = train(classe ~ ., data = train , method = "rf", tryControl = fitControl, tuneGrid = rf$finalModel$tuneValue)
+
+```
+
+We can check the result of our final model on the test set that we split before. The metric on this test set is our expected result when we apply this model on new data.
+
+```{r}
+final_test_predict = predict(final_rf, test)
+confusionMatrix(final_test_predict,reference = factor(test$classe))
+```
+
+This result give us Accuracy > 0.99. We would be confident enough to use this model on new coming data.
+
+## Testing result
+
+At last, we use our `final_rf` model to predict data from the test set.
+
+```{r}
+test_dat = read_csv("data/pml-testing.csv")
+
+predictors = names(df) 
+predictors = predictors[predictors != "classe"]
+test_dat = test_dat %>% 
+  select(all_of(predictors))
+
+predict(final_rf, newdata = test_dat)
+```
+
+## Appendix
+
+### Explore correlation between predictors
+```{r}
+GGally::ggcorr(train %>% select(-classe))
+```
+
+### Plot model accuracy vs complexity parameter
+
+```{r}
+plot(d_tree)
+plot(rf)
+```
+
